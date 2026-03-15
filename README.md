@@ -15,6 +15,7 @@ The skills also self-improve. A calibration step after each run bakes audit find
 | [remediate](skills/remediate/) | `/remediate` | Something is broken | Gap analysis → structured plans → batched parallel execution → audit |
 | [plan](skills/plan/) | `/plan` | Something needs to be built | Goal decomposition → design → batched parallel execution → audit |
 | [prioritize](skills/prioritize/) | `/prioritize` | What should we build next? | Audit plans vs code → verify status → discover gaps → score → rank |
+| [research](skills/research/) | `/research` | External tool/concept to evaluate | Scout → dissect → abstract → chain to `/plan` if actionable |
 
 ## Installation
 
@@ -47,7 +48,12 @@ EXPLORE → DESIGN → DECOMPOSE → (optional) EXECUTE → AUDIT → CLOSE
 INVENTORY → VERIFY → DISCOVER → SCORE → RANK → PRESENT
 ```
 
-All three skills use **gated phases** — they pause for user confirmation before advancing to the next phase.
+**`/research`** — Intelligence gathering pipeline for external tools, libraries, and concepts:
+```
+SCOUT → DISSECT → ABSTRACT → (chain to /plan if actionable)
+```
+
+All four skills use **gated phases** — they pause for user confirmation before advancing to the next phase.
 
 ### Model Assignment
 
@@ -104,3 +110,7 @@ Each skill accepts scope arguments to skip phases or target specific plans:
 | `/prioritize` | `plans` | Plans-only: inventory + verify, skip discovery |
 | `/prioritize` | `gaps` | Gaps-only: skip plans, scan code for issues |
 | `/prioritize` | `quick` | Fast mode: inventory + verify only |
+| `/research` | `<url>` | Full pipeline: scout → dissect → abstract |
+| `/research` | `<url> <url>` | Scout both, cross-reference in dissect |
+| `/research` | `<topic>` | WebSearch first, then full pipeline |
+| `/research` | `scout <url>` | Scout only — gather and present, no analysis |
