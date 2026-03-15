@@ -138,11 +138,13 @@ Each `00-overview.md` has:
 Launch batched parallel agents with model overrides.
 
 #### Batch formation
-1. Start with zero-blocker tasks
-2. Model by COMPLEXITY tag (see mapping above)
-3. **SAME-FILE RULE**: Tasks whose TOUCHES overlap MUST be in the same agent or sequential batches
-4. **CROSS-REPO ATOMIC RULE**: When a concern changes a protocol type (required field, new field, removed field), ALL repos consuming that type must be updated in the same agent or batch. This includes test files.
-5. Max 10 agents per batch
+1. **BATCH 0 — REGRESSION CHECK**: If prior-run reconciliation flagged potential regressions (done items that fresh analysis questions), launch read-only haiku verification agents FIRST. Each reads the specific file and reports FIXED / NOT_FIXED. Results determine which items need new concerns vs can be closed. Do not skip this — Run 2 found 6 of 7 regression checks were NOT_FIXED.
+2. Start with zero-blocker tasks
+3. Model by COMPLEXITY tag (see mapping above)
+4. **SAME-FILE RULE**: Tasks whose TOUCHES overlap MUST be in the same agent or sequential batches
+5. **CROSS-REPO ATOMIC RULE**: When a concern changes a protocol type (required field, new field, removed field), ALL repos consuming that type must be updated in the same agent or batch. This includes test files.
+6. **HIGH-TRAFFIC FILE RULE**: If 3+ concerns touch the same file (e.g., a service's index.ts), strongly prefer a SINGLE agent for all of them. Run 2's audit found 5 of 8 issues originated from multi-agent edits to coordinator/index.ts.
+7. Max 10 agents per batch
 
 #### Pre-batch blocker verification
 Before each batch, launch haiku agents to verify each BLOCKED_BY claim using its VERIFY_BLOCKER check. False blockers get promoted into the current batch.
@@ -175,6 +177,13 @@ RULES:
 - If you instantiate a component, verify it's wired to its consumer AND cleaned up in shutdown
 - If you modify a shared type/interface, all downstream consumers (including tests) must be updated to match
 - If you embed dynamic values in code strings, sanitize them (e.g., JSON.stringify) before interpolation
+- If you track entities by identity key (user, researcher, node), use ONE consistent key type everywhere (e.g., pubkey). Do NOT mix peerId, pubkey, and proposalId — this silently breaks lookups across components.
+- If you emit a metric (counter.inc, histogram.observe), verify it fires only on actual state transitions, not intermediate events. A 3-node redundancy job must only inc(finalized) once, not on each partial result.
+- If you pass a snapshot/value to an adapter or downstream consumer, verify the consumer actually reads it. Pattern to avoid: caller passes PnLSnapshot, adapter ignores it and re-reads live state.
+- If you add a periodic timer/sweep (setInterval), grep the codebase first for existing timers on the same resource. Two sweeps on the same queue create races.
+- If you track child process PIDs for shutdown, register the PID BEFORE the async work completes — not after. A PID registered after the process exits is useless or dangerous (PID recycling).
+- `side === 'sell'` is NOT a reliable proxy for "close order" — only `reduceOnly` is
+- `as any` casts on proto/gRPC types hide silent failures — flag these and avoid adding new ones
 {additional rules from CALIBRATION.md RULES section, if they exist}
 
 1. Read the relevant source files first
@@ -218,6 +227,14 @@ Launch audit agents per repo, scoped to `git diff --name-only`. Check for:
 **Security**: template injection, `as any` casts, non-null assertions on optional fields, unhandled promise rejections
 
 **Cross-repo consistency**: canonicalization functions producing different output, signing/verification algorithm mismatches
+
+**Identity key confusion**: components using different keys for the same entity (pubkey vs peerId vs proposalId). Check that Maps, lookups, and stores all use the same key type for a given entity.
+
+**Metrics double-counting**: metrics incremented on intermediate events (every partial result) instead of only on state transitions (actual finalization). Check that counters inside loops or callback handlers fire at the right granularity.
+
+**Dead imports**: one agent imports a metric/function, another agent moves the actual usage to a different file. Grep for unused imports in modified files.
+
+**Duplicate timers/sweeps**: two agents both add setInterval for the same resource (e.g., queue processing). Check for multiple timers targeting the same Redis key or data structure.
 
 #### 4c: Decision
 - Minor (< 5 mechanical) → fix inline
