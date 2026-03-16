@@ -10,7 +10,7 @@ disable-model-invocation: true
 Audit all plans against actual code to produce a ranked implementation order. Answers: "What should we build next, and why?"
 
 ```
-INVENTORY → VERIFY → DISCOVER → SCORE → RANK → PRESENT
+INVENTORY → VERIFY+DISCOVER (team) → SCORE+RANK (opus) → PRESENT
 ```
 
 ---
@@ -33,32 +33,25 @@ Output: a **plan inventory table** — plan #, name, status, open concern count,
 
 ---
 
-### Phase 2: VERIFY
+### Phase 2: VERIFY + DISCOVER
 
-Do NOT trust plan STATUS. Verify against actual code.
+#### Team composition
 
-Launch parallel Explore agents (one per plan group) to check:
+| Round | Role | Model | Count | Input | Output |
+|-------|------|-------|-------|-------|--------|
+| 1 | **Verifiers** | haiku | 1/plan | Plan concerns + TOUCHES paths | Status corrections: DONE/NOT_DONE per concern + unexpected code found nearby |
+| 2 | **Gap Hunters** | sonnet | 1/repo | Verifier outputs + repo path | Unplanned gaps cross-referenced against plans + verification anomalies explained |
+| 3 | **Synthesizer** | opus | 1 | All verifier + gap hunter outputs + DEPENDENCIES.md | Unified verified status table + deduplicated gap report + cross-repo pattern identification |
 
-1. **"Done" plans with suspicious gaps**: For plans marked done, spot-check that key files/functions mentioned in TOUCHES actually exist and contain the expected implementation (not stubs)
-2. **"Open" plans**: Confirm they're genuinely unimplemented
-3. **"Partial" plans**: Identify exactly which concerns are done vs open in source
+**Why merge VERIFY and DISCOVER into one team**: Previously these ran as separate phases with separate agents. The synthesizer seeing *both* verified plan state and discovered gaps together produces better results — it can identify when a "gap" is actually a planned item with stale status, or when a "done" item has regressed into a gap.
 
-For each concern, check:
+**Verifier checks per concern:**
 - Do the files in TOUCHES exist?
 - Do they contain the types/functions/classes described in the plan?
 - Are they stubs (placeholder returns, TODO comments, empty implementations) or real?
 - Are they wired to consumers (imported and called)?
 
-Output: a **verified status table** — correcting any stale STATUS fields. Flag discrepancies (plan says done but code is missing, or plan says open but code exists).
-
----
-
-### Phase 3: DISCOVER
-
-Find implementation gaps NOT covered by any existing plan.
-
-Launch parallel Explore agents to search for:
-
+**Gap Hunter searches:**
 1. **Stubs and placeholders**: TODO, FIXME, HACK, STUB, "not implemented", placeholder returns, hardcoded values, `as any` casts on critical paths
 2. **Dead code and unused exports**: Functions/classes defined but never imported
 3. **Feature flags and disabled functionality**: Commented-out code blocks, environment variable gates
@@ -66,17 +59,21 @@ Launch parallel Explore agents to search for:
 5. **Incomplete wiring**: Components instantiated but not connected to consumers
 6. **Fake implementations**: Files with "stub", "mock", "fake" in names that are used in production paths
 
-Cross-reference each finding against existing plans:
-- If covered by an existing plan → note it
-- If NOT covered → flag as **unplanned gap**
+**Synthesizer responsibilities:**
+- Reconcile verifier and gap hunter findings (deduplicate, resolve contradictions)
+- Flag discrepancies (plan says done but code is missing, or plan says open but code exists)
+- Identify cross-repo patterns (e.g., "3 different plans have stale status in the same repo — likely a bulk update was done without updating plans")
+- Produce unified output: **verified status table** + **gap report**
 
-Output: a **gap report** — unplanned gaps with file paths, severity, and suggested plan assignment.
+**For `quick` scope**: Skip gap hunters and synthesizer. Run verifiers only.
 
 ---
 
-### Phase 4: SCORE
+### Phase 3: SCORE + RANK
 
-Score each open item (verified open concerns + unplanned gaps) on 5 dimensions:
+The **opus synthesizer** from Phase 2 continues into scoring and ranking (or a new opus agent receives the Phase 2 output). This is judgment-heavy work — weighing tradeoffs, understanding dependency chains, and making priority calls.
+
+**Score** each open item (verified open concerns + unplanned gaps) on 5 dimensions:
 
 | Dimension | Weight | How to assess |
 |-----------|--------|---------------|
@@ -88,11 +85,7 @@ Score each open item (verified open concerns + unplanned gaps) on 5 dimensions:
 
 Score each item 1-5 per dimension, compute weighted total.
 
----
-
-### Phase 5: RANK
-
-Produce the final priority order by:
+**Rank** by producing the final priority order:
 
 1. Sort by weighted score (descending)
 2. Apply dependency constraints — if A blocks B and both score similarly, A goes first
@@ -105,7 +98,7 @@ Produce the final priority order by:
 
 ---
 
-### Phase 6: PRESENT
+### Phase 4: PRESENT
 
 Present to the user:
 
@@ -145,6 +138,8 @@ Items not covered by any plan, with recommendation: create new plan, add to exis
 
 - **Never trust STATUS** — always verify against source code
 - **Cross-reference everything** — gaps found in code should map to plans, plans should map to code
+- **Opus for judgment** — scoring, ranking, and cross-referencing are reasoning-heavy; use opus synthesizer
+- **Team for breadth, opus for depth** — haiku verifiers and sonnet gap hunters gather data; opus synthesizer makes sense of it
 - **Score objectively** — use the 5-dimension rubric, not gut feel
 - **Present actionably** — the output should directly inform what to `/plan` or `/remediate` next
 - **Preserve context** — reference specific file paths and line numbers so findings are verifiable

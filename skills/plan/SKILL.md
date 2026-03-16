@@ -37,15 +37,48 @@ Output: a **landscape summary** — what exists, what's relevant, what the goal 
 
 Make architectural decisions before writing concern files.
 
-For non-trivial goals, launch a Plan agent (opus or sonnet) to:
-- Identify the key design decisions (technology choices, patterns, data flow)
-- Propose 2-3 approaches with tradeoffs
-- Identify risks and unknowns
-- Recommend an approach
+**For simple goals**, skip this phase — go straight to DECOMPOSE.
 
-For simple goals, skip this phase — go straight to DECOMPOSE.
+**For non-trivial goals**, use the adversarial design team:
 
-Output: a **design brief** — approach chosen, key decisions made, risks identified.
+| Round | Role | Model | Count | Input | Output |
+|-------|------|-------|-------|-------|--------|
+| 1 | **Designer** | sonnet | 1 | Landscape summary + goal | Draft design: 2-3 approaches with tradeoffs, key decisions, risks, recommendation |
+| 2 | **Red Team** | opus | 2 (parallel) | Draft design + landscape | Critique: failure modes, scaling issues, edge cases, missed alternatives, wrong assumptions |
+| 3 | **Arbiter** | opus | 1 | Design + both critiques | Final design: resolves concerns, strengthens weak points, makes the call |
+
+**Why adversarial design**: A single agent designing in isolation produces plausible designs that miss failure modes. The epsilon false-fix in Run 4 was exactly this — a single-agent analysis error. Two opus red teamers arguing with the design catches the "this works until..." class of issues before any code is written.
+
+**Red Team prompt template:**
+```
+You are adversarially reviewing a design for: {goal}
+
+LANDSCAPE: {landscape summary from Phase 1}
+DRAFT DESIGN: {designer output}
+
+Your job is to ATTACK this design. Find:
+1. Failure modes the designer didn't consider (concurrency, partial failure, data loss)
+2. Scaling bottlenecks that only appear at load
+3. Edge cases that break the happy path
+4. Simpler alternatives the designer missed
+5. Assumptions that are wrong or unverified
+6. Dependencies that don't exist or work differently than assumed
+
+For each issue:
+- SEVERITY: critical (blocks shipping) | significant (causes bugs) | minor (suboptimal)
+- EVIDENCE: why you believe this is a real issue, not theoretical
+- SUGGESTION: how to address it (or "needs more research")
+
+Be specific. "This might not scale" is useless. "With 1000 concurrent writers, the single Redis LPOP becomes a bottleneck because..." is useful.
+```
+
+**Arbiter behavior:**
+- Critical issues from red team MUST be addressed in the final design
+- Significant issues should be addressed or explicitly accepted as known risks with mitigation
+- If red teamers disagree with each other, the arbiter weighs the evidence, doesn't average
+- If a red team concern reveals the design is fundamentally wrong, the arbiter can reject the draft and restart Round 1 with new constraints (max 1 restart)
+
+Output: a **design brief** — approach chosen, key decisions made, risks identified, red team concerns addressed.
 
 Write to `plans/<goal-name>/DESIGN.md`:
 ```markdown
@@ -55,6 +88,8 @@ Write to `plans/<goal-name>/DESIGN.md`:
 ## Key Decisions
 | Decision | Choice | Alternatives considered | Rationale |
 ## Risks
+## Red Team Concerns Addressed
+| Concern | Severity | Resolution |
 ## Open Questions (if any — resolve before DECOMPOSE)
 ```
 
@@ -98,12 +133,23 @@ What changes in other repos as a result.
 How to confirm this works.
 ```
 
-#### COMPLEXITY → model mapping
+#### Model assignment
+
+**By implementation complexity (for implementer agents):**
 | Tag | Model | Use when |
 |-----|-------|----------|
 | `mechanical` | haiku | Clear implementation, schema, config, boilerplate, < 10 files |
 | `architectural` | sonnet | System integration, cross-repo, new abstractions, 10+ files |
-| `research` | opus | Only for the single most critical design decision. Rare. |
+| `research` | opus | Critical design decisions requiring deep reasoning about tradeoffs |
+
+**By team role (for non-implementer agents):**
+| Role | Model | Rationale |
+|------|-------|-----------|
+| Designer | sonnet | Produces draft designs — good enough for red team to attack |
+| Red Team | opus | Finding non-obvious failure modes requires strongest reasoning |
+| Arbiter | opus | Resolving conflicting critiques, making the final call |
+| Reviewer | opus | Judgment on correctness, completeness, downstream implications |
+| Scout/Verifier | haiku | Data gathering, existence checks |
 
 #### Dependency graph
 Create `00-overview.md` with:
@@ -168,9 +214,22 @@ IMPORTANT: If you discover the task is already done, partially done,
 or blocked differently than expected, REPORT THIS instead of forcing.
 ```
 
-#### After each batch
+#### Inline review (per batch)
+
+After each batch of implementers, run an **opus reviewer** before advancing. Same mechanism as `/remediate`:
+
+| Step | Role | Model | Input | Output |
+|------|------|-------|-------|--------|
+| 1 | **Reviewer** | opus | All diffs from this batch + their concern files | Pass/fail per agent + issues list with severity |
+| 2 | **Fixer** | sonnet (or per-complexity) | Reviewer's issues list | Targeted fixes for failed items |
+
+**When to skip:** Batch contains only haiku mechanical fixes (< 3 files each, no shared types).
+
+See `/remediate` Phase 3 for the full reviewer prompt template.
+
+#### After each batch (post-review)
 - TodoWrite progress update
-- Scorecard (task, model, time, result)
+- Scorecard (task, model, time, result, review pass/fail)
 - Shared-file changelog for next batch
 - Unblocked task check
 
@@ -187,13 +246,14 @@ If Phase 4 was executed, audit is **mandatory**. Same as `/remediate`:
 - Run existing test suites
 - Grep for `TODO`, `FIXME`, `HACK` introduced by agents
 
-#### 5b: Re-analyze changed files
-Launch audit agents scoped to `git diff --name-only`. Check for:
-- **Multi-agent conflicts**: inconsistent edits to shared files
-- **Incomplete wiring**: components created but not connected
-- **Type drift**: tests/consumers using old shapes after type changes
+#### 5b: Cross-batch consistency review
+With inline review catching per-batch issues, this phase focuses on **cross-batch consistency**. Launch an **opus audit agent** with the full `git diff` across ALL batches. Check for:
+- **Multi-agent conflicts**: inconsistent edits to shared files across different batches
+- **Incomplete wiring**: components created in one batch but not connected by a later batch
+- **Type drift**: tests/consumers using old shapes after cross-batch type changes
 - **SQL mismatches**: queries assuming nonexistent constraints
 - **Security**: injection, unsafe casts, unhandled rejections
+- **Goal completion**: does the sum of all changes actually achieve the original goal from Phase 2?
 
 #### 5c: Decision
 - Minor issues → fix inline
@@ -239,11 +299,14 @@ Same mechanism as `/remediate calibrate`:
 
 - **Explore before designing** — understand what exists before deciding what to build
 - **Design before decomposing** — make key decisions before writing concern files
+- **Adversarial design for non-trivial goals** — Designer drafts, Red Team attacks, Arbiter resolves
 - **TOUCHES analysis** — identify shared files before batching to prevent conflicts
 - **Never guess file contents** — always read before editing
 - **Preserve existing patterns** — new code should look like it belongs
 - **Verify blockers at execution time** — don't trust the plan blindly
 - **Propagate context between batches** — agents must know what previous agents did
+- **Inline review before next batch** — opus reviewer catches issues while context is fresh
+- **Use opus for judgment, not volume** — opus reviews, red teams, arbitrates, and synthesizes; it doesn't do bulk implementation
 - **Agents report anomalies** — don't force, report
 
 ## Differences from /remediate
@@ -252,7 +315,8 @@ Same mechanism as `/remediate calibrate`:
 |--------|-----------|-------|
 | Trigger | Something is broken | Something needs to be built |
 | Phase 1 | Gap analysis (find problems) | Explore (map what exists) |
-| Phase 2 | Plan (group problems into fixes) | Design (make architectural decisions) |
+| Phase 2 | Plan (group problems into fixes) | Design (adversarial: draft → red team → arbiter) |
 | Concern format | Problem → Evidence → Fix | Goal → Approach → Verify |
 | Typical complexity | More mechanical fixes | More architectural concerns |
-| Design doc | No | Yes (DESIGN.md) |
+| Design doc | No | Yes (DESIGN.md with red team concerns) |
+| Shared | Inline opus reviewer per batch, context propagation, calibration loop |

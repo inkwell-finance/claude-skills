@@ -5,7 +5,7 @@ Research an external project, tool, library, or concept. Distill and abstract th
 Unlike `/plan` (build something new) or `/remediate` (fix what's broken), `/research` is about **intelligence gathering** — understanding what exists in the world and extracting what's relevant to our system.
 
 ```
-SCOUT → DISSECT → ABSTRACT → (chain to /plan if actionable)
+SCOUT (parallel) → DISSECT+ABSTRACT (team: comparator → strategist) → (chain to /plan if actionable)
 ```
 
 ---
@@ -35,20 +35,26 @@ Gather comprehensive information about the target.
 - API surface / interface
 - What makes it different from alternatives
 
-**Output**: A **research brief** — concise but complete. Facts, not opinions. No recommendations yet.
+**For multiple targets** (e.g., `research <url> <url>` or broad topic with 3-5 implementations): launch parallel sonnet scout agents, one per target. Each produces its own research brief. All briefs feed into the DISSECT+ABSTRACT team together.
 
-**Gate**: Present the brief to the user. Confirm understanding before moving to DISSECT.
+**Output**: A **research brief** per target — concise but complete. Facts, not opinions. No recommendations yet.
+
+**Gate**: Present the brief(s) to the user. Confirm understanding before moving to DISSECT+ABSTRACT.
 
 ---
 
-### Phase 2: DISSECT
+### Phase 2: DISSECT + ABSTRACT
 
-Break the research target into its constituent ideas and patterns.
+#### Team composition
 
-Separate the **implementation** (specific code, specific tool) from the **concepts** (patterns, architectures, conventions that could exist in any codebase).
+| Round | Role | Model | Count | Input | Output |
+|-------|------|-------|-------|-------|--------|
+| 1 | **Comparator** | sonnet | 1 | All scout outputs | Concept extraction table: implementation vs transferable pattern, cross-references between sources |
+| 2 | **Strategist** | opus | 1 | Comparator output + behemoth codebase context | Ranked abstract patterns with concrete application points + build-vs-buy assessment |
 
-Structure as a table:
+**Why this team**: DISSECT (separating concepts from implementations) is structured analysis — sonnet excels. ABSTRACT (ranking by impact, mapping to behemoth architecture, judging build-vs-buy) is strategic judgment — opus excels. Previously these were sequential solo phases; now the strategist benefits from the comparator's structured extraction.
 
+**Comparator output format:**
 ```
 | Concept | How they implemented it | Transferable? | Why / why not |
 |---------|----------------------|---------------|---------------|
@@ -56,35 +62,27 @@ Structure as a table:
 
 **Transferable** means: this idea could improve behemoth regardless of whether we adopt this specific tool.
 
-**Rules**:
+**Comparator rules:**
 - Focus on ideas, not features. "Wide events" is a concept. "evlog's Nuxt module" is an implementation detail.
 - Identify the **non-obvious** insights. The obvious ones (e.g., "has good docs") aren't useful.
 - Note design tensions — where did they make tradeoffs? What did they sacrifice?
 - If multiple research targets have been scouted, cross-reference. What patterns recur?
 
-**Output**: A **concept extraction table** with clear transferable/not-transferable judgments.
-
-**Gate**: None — flow directly into ABSTRACT.
-
----
-
-### Phase 3: ABSTRACT
-
-For each transferable concept, define it independently of its source.
-
-For each concept, write:
+**Strategist output format** — for each transferable concept:
 ```
 **Concept**: [name]
 **Pattern**: [what it is, generalized — no reference to the source tool]
 **Mechanism**: [how it works in practice — concrete enough to implement]
 **Value for behemoth**: [specific benefit, referencing behemoth's architecture]
 **Where it applies**: [which repos, modules, or workflows it touches]
+**Build vs Buy**: [borrow the pattern | adopt the dependency — with rationale]
 ```
 
-**Rules**:
+**Strategist rules:**
 - The abstraction must stand on its own. If you removed all mention of the source tool, the concept should still be clear and actionable.
 - Be specific about where in behemoth it applies. "Could improve logging" is too vague. "The trader's error handling in `src/shared/logging/` could emit structured error events with `why`/`fix` fields to `.behemoth/events.jsonl`" is concrete.
 - Rank concepts by impact: which ones close the biggest gaps or unlock the most value?
+- Default to building the pattern, not adopting the dependency, unless the dependency solves a genuinely hard problem (crypto, consensus, etc.)
 
 **Output**: A ranked list of **abstract patterns** with concrete behemoth application points.
 
@@ -125,6 +123,7 @@ When chaining into `/plan`, pass forward:
 
 - **Breadth before depth in SCOUT** — get the full picture (README, source, architecture) before diving into specifics
 - **Ideas over implementations in DISSECT** — the tool is a vehicle for concepts, not the point
+- **Opus for strategy, sonnet for structure** — comparator extracts and organizes; strategist judges value and applicability
 - **Concrete over vague in ABSTRACT** — every concept must map to specific behemoth files/modules
 - **Build over buy by default** — borrow patterns, not dependencies, unless the dependency is clearly justified
 - **Cross-reference when possible** — if multiple sources share a pattern, that signal is stronger
