@@ -16,6 +16,7 @@ The skills also self-improve. A calibration step after each run bakes audit find
 | [plan](skills/plan/) | `/plan` | Something needs to be built | Goal decomposition → design → batched parallel execution → audit |
 | [prioritize](skills/prioritize/) | `/prioritize` | What should we build next? | Audit plans vs code → verify status → discover gaps → score → rank |
 | [research](skills/research/) | `/research` | External tool/concept to evaluate | Scout → dissect → abstract → chain to `/plan` if actionable |
+| [leviathan-agent](skills/leviathan-agent/) | `/leviathan-agent` | Stake IKA, analyze validators, manage API keys | IKA staking API client: allocate → build tx → sign → submit |
 
 ## Installation
 
