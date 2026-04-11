@@ -8,6 +8,14 @@ allowed-tools: Bash(agent-browser:*), Read, Write
 
 Automates claiming SOL from faucet.solana.com via headed browser with persistent GitHub auth.
 
+## Prerequisites
+
+Before first run, verify these are available:
+
+1. **agent-browser** — `agent-browser --version` should print a version. Install with `npm i -g agent-browser` or `volta install agent-browser`.
+2. **Chrome/Chromium** — agent-browser uses Chrome via CDP. Run `agent-browser install` to download a compatible Chromium if needed.
+3. **GitHub account** — the faucet requires GitHub OAuth to unlock 5 SOL airdrops. On first run the skill will open a headed browser for you to sign in (one-time).
+
 ## Configuration
 
 Settings are stored in `~/.sol-faucet/config.json`:
