@@ -17,6 +17,7 @@ The skills also self-improve. A calibration step after each run bakes audit find
 | [prioritize](skills/prioritize/) | `/prioritize` | What should we build next? | Audit plans vs code → verify status → discover gaps → score → rank |
 | [research](skills/research/) | `/research` | External tool/concept to evaluate | Scout → dissect → abstract → chain to `/plan` if actionable |
 | [leviathan-agent](skills/leviathan-agent/) | `/leviathan-agent` | Stake IKA, analyze validators, manage API keys | IKA staking API client: allocate → build tx → sign → submit |
+| [sol-faucet](skills/sol-faucet/) | `/sol-faucet` | Need devnet/testnet SOL | Browser automation for faucet.solana.com with persistent GitHub auth |
 
 ## Installation
 
