@@ -13,6 +13,8 @@ Unlike `/remediate` (reactive — find what's broken, fix it), `/plan` is proact
 
 ```
 EXPLORE → DESIGN → DECOMPOSE → (optional) EXECUTE → AUDIT → CLOSE
+                ↑___________________________________|
+        AUDIT escalates to DESIGN on a design-level failure, or loops to DECOMPOSE on an implementation failure
 ```
 
 ---
@@ -80,7 +82,8 @@ Be specific. "This might not scale" is useless. "With 1000 concurrent writers, t
 
 Output: a **design brief** — approach chosen, key decisions made, risks identified, red team concerns addressed.
 
-Write to `plans/<goal-name>/DESIGN.md`:
+Write to `plans/####-<goal-name>/DESIGN.md`:
+The #### should be a logical increment from the last plan in the repo.
 ```markdown
 # Design: <goal>
 
@@ -103,7 +106,7 @@ Break the design into executable concern files. Same structure as `/remediate` p
 
 #### Plan directory
 ```
-plans/<goal-name>/
+plans/####-<goal-name>/
 ├── DESIGN.md              # From Phase 2
 ├── 00-overview.md          # Scope, deps, remediation order
 ├── 01-concern.md           # First task
@@ -166,7 +169,12 @@ Before finalizing the plan, check: do any concerns have overlapping TOUCHES? If 
 - Mark as sequential with explicit ordering, OR
 - Note which agent gets priority and what context the later agent needs
 
-**Gate**: Present the decomposition to user. Confirm concern list, batch order, and complexity assignments.
+#### Cost & scale estimate
+Before presenting, tally the planned fan-out: count agents by model across all batches (implementers by COMPLEXITY tag + the per-batch opus reviewer + the audit agent). Present this at the gate as `N haiku + M sonnet + K opus agents across B batches`, so the user can cut **scope** — not quality — if it's too large. The human already approves the decomposition; surfacing the cost here makes that approval informed instead of discovering the bill after the fact.
+
+**Concern-count ceiling**: if a single plan carries more than ~12 `architectural`/`research` concerns, treat that as a signal the goal is too big for one plan — propose splitting it. A bloated plan is a scoping problem, never a model-assignment problem. Do **not** "solve" it by downgrading concerns below their COMPLEXITY tag; that trades correctness for cost and breaks the reason each tag exists (see Phase 4 budget circuit-breaker).
+
+**Gate**: Present the decomposition to user. Confirm concern list, batch order, complexity assignments, and the cost/scale estimate.
 
 ---
 
@@ -227,13 +235,25 @@ After each batch of implementers, run an **opus reviewer** before advancing. Sam
 
 See `/remediate` Phase 3 for the full reviewer prompt template.
 
+#### Checkpoint per batch (git-native)
+Use git as the rollback boundary — never hand-snapshot a subset of touched files (that loses atomicity and leaves the tree half-reverted).
+- **Before batch N**: confirm a clean baseline. The working tree should be committed (or stashed) so the batch starts from a known-good state. Record that commit as `checkpoint-batch-{N-1}` (a tag or noted SHA).
+- **After batch N passes inline review**: commit the batch as one atomic unit and tag it `checkpoint-batch-{N}`. This is the green state the next batch builds on.
+- **On audit failure for batch N** (see Phase 5): `git reset --hard checkpoint-batch-{N-1}` back to the last green state, then re-decompose (or re-design) rather than patching a corrupted tree forward.
+
+This mirrors the worktree-isolation + proven-merge model the squad fleet uses: every unit lands from a known-good base or not at all. The inline reviewer (above) already catches most single-batch defects before they land — the checkpoint's real value is **cross-batch** failures that only surface in AUDIT, where you need a clean point to roll back to.
+
+#### Autonomous budget circuit-breaker
+When the user says "keep going" (no per-batch gate), keep a running tally of agents spawned by model. If it crosses the Phase 3 estimate by a meaningful margin, **pause and ask** — report cost so far, concerns remaining, and offer continue / cut scope / stop. **Never** silently downgrade a concern below its COMPLEXITY tag, and never skip the opus reviewer or audit agent to stay under budget: a missed cross-batch bug costs a full loop cycle — far more than the model call it saved. The whole "opus for judgment" design exists because cheap bugs caught late are expensive. Budget forces scope reduction *with a human in the loop*, not quality reduction behind their back.
+
 #### After each batch (post-review)
 - TodoWrite progress update
 - Scorecard (task, model, time, result, review pass/fail)
+- Commit/tag the batch as `checkpoint-batch-{N}` (the rollback boundary for the next batch)
 - Shared-file changelog for next batch
 - Unblocked task check
 
-**Gate**: User approves each batch (or "keep going" for autonomous).
+**Gate**: User approves each batch (or "keep going" for autonomous — subject to the budget circuit-breaker above).
 
 ---
 
@@ -257,10 +277,12 @@ With inline review catching per-batch issues, this phase focuses on **cross-batc
 
 #### 5c: Decision
 - Minor issues → fix inline
-- Significant → new concerns, loop to Phase 3
+- Significant *implementation* issues → new concerns, loop to Phase 3 (DECOMPOSE)
+- **Design-level failure** → loop to Phase 2 (DESIGN), not Phase 3. This is when the audit shows the chosen *approach* is wrong — not a botched concern, but a flaw in DESIGN.md that re-decomposing the same design would only reproduce (e.g., 5b's "goal completion" check fails because the architecture can't actually achieve the goal). Re-run the adversarial design team with the audit findings as new input; the arbiter's restart cap applies (max 1 design loop) before escalating to the user. Looping to DECOMPOSE here just executes the same broken plan twice.
 - Shared-file conflicts → single agent reads ALL changes
+- Corrupted/inconsistent tree → `git reset --hard` to the last green `checkpoint-batch-{N}` (Phase 4), then re-decompose or re-design rather than patching forward
 
-**Gate**: User decides: close, fix, or loop.
+**Gate**: User decides: close, fix, loop to DECOMPOSE, or escalate to DESIGN.
 
 ---
 
@@ -268,7 +290,7 @@ With inline review catching per-batch issues, this phase focuses on **cross-batc
 
 - Update concern files: STATUS: done, Resolution notes
 - Update 00-overview.md with completion stats
-- If CALIBRATION.md exists, append learnings
+- If CALIBRATION.md exists, append learnings — **from clean runs, not just failures.** On a run that completed with zero review/audit failures, record the *falsifiable* signals worth repeating: which COMPLEXITY→model assignments held (e.g., "haiku cleared all 6 mechanical concerns with zero review failures → the mechanical threshold is well-calibrated here"), which decomposition shapes avoided shared-file conflicts, which batch orderings parallelized cleanly. Scope positive learnings to concrete, checkable claims — never vibes like "the design was clean." Calibration that only learns from mistakes never reinforces what works, so it keeps re-deriving the same good choices.
 - If this was a new codebase pattern, suggest `/plan calibrate` to bake learnings into the skill
 
 ---
@@ -306,6 +328,10 @@ Same mechanism as `/remediate calibrate`:
 - **Verify blockers at execution time** — don't trust the plan blindly
 - **Propagate context between batches** — agents must know what previous agents did
 - **Inline review before next batch** — opus reviewer catches issues while context is fresh
+- **Checkpoint per batch** — commit each green batch so audit failures roll back cleanly (`git reset --hard`) instead of patching a corrupted tree forward
+- **Audit can escalate to DESIGN** — a design-level failure loops to Phase 2, not Phase 3; never re-execute a broken design
+- **Budget forces scope, not quality** — surface the cost estimate at the DECOMPOSE gate; in autonomous mode, pause and ask rather than downgrading models below their COMPLEXITY tag
+- **Calibrate from successes too** — clean runs teach which assignments and decompositions to repeat, not just which to avoid
 - **Use opus for judgment, not volume** — opus reviews, red teams, arbitrates, and synthesizes; it doesn't do bulk implementation
 - **Agents report anomalies** — don't force, report
 
