@@ -1,6 +1,6 @@
 ---
 name: remediate
-description: Run gap analysis across repos, generate structured remediation plans, and execute fixes in parallel batches with model-appropriate task assignment. Use when the user wants to audit, analyze, or fix issues across a codebase.
+description: Recursive gap-analysis-to-fix pipeline for existing code — multi-dimension audit across repos, structured plans/ with dependency graph, batched parallel execution with worktree isolation and inline review, cross-batch audit, calibrate. Scopes — all | <path> | plans/ | plans/<name> | batch N | audit | calibrate. For systemic multi-concern remediation, not single bug fixes, not diff review (/code-review), not building new features (/plan).
 argument-hint: "[scope]"
 disable-model-invocation: true
 ---
@@ -31,16 +31,20 @@ If scope is `calibrate`, skip to the Calibrate section at the bottom.
 
 | Round | Role | Model | Count | Input | Output |
 |-------|------|-------|-------|-------|--------|
-| 1 | **Scouts** | haiku | 1/repo | repo path | Raw findings: file paths, code snippets, potential issues per dimension |
-| 2 | **Dimension Analysts** | sonnet | 1/dimension (up to 8) | All scout outputs for their dimension | Structured gaps for that dimension across ALL repos |
-| 3 | **Synthesizer** | opus | 1 | All analyst outputs | Cross-cutting summary, deduplication, severity ranking, cross-repo patterns |
+| 1 | **Scouts** | sonnet (low effort) | 1/repo | repo path | Structured findings per dimension: file paths, code snippets, potential issues |
+| 2 | **Dimension Analysts** (optional) | sonnet | 1/dimension (up to 8) | All scout outputs for their dimension | Structured gaps for that dimension across ALL repos |
+| 3 | **Synthesizer** | fable (fallback: opus) | 1 | All scout/analyst outputs | Cross-cutting summary, deduplication, severity ranking, cross-repo patterns |
 
 **Why teams for large scopes**: Per-repo agents independently assessing security, correctness, etc. miss cross-repo patterns (Run 2's coordinator/index.ts conflict was invisible to individual repo agents). Dimension-oriented analysts see the full picture for their specialty.
+
+**Default — skip dimension analysts**: Sonnet scouts already cover all 8 dimensions with structured output, so Round 2 is optional: go scout → synthesizer directly. Run 13 used this pattern successfully: 8 sonnet scouts → 1 synthesizer, with a 36% dedup rate and no loss of cross-repo pattern detection. Insert dimension analysts only when scout outputs come back unstructured, or when a single dimension spans many repos and needs dedicated cross-repo attention.
 
 **Routing rules:**
 - Round 2 analysts receive ALL scout outputs, not just their dimension — context from other dimensions helps (e.g., a security analyst should know about architectural coupling)
 - Round 3 synthesizer receives analyst outputs labeled by dimension
 - If synthesizer finds contradictions between analysts, it resolves by examining the evidence, not averaging the opinions
+
+**Scope rule — never silently omit a repo**: For an `all` scope, enumerate every repo root in the workspace (excluding vendored/generated trees and external symlinks), present the manifest to the user, and get confirmation — especially repos handling financial state or user data. Run 10 found 3 p0 and 3 p1 issues in a repo (HyPaper) that was excluded from Run 9's scope; a missing repo is a blind spot that compounds across runs. For an explicit single-path scope, analyze only that path — note un-analyzed sibling repos in the summary instead of expanding scope.
 
 #### 8 analysis dimensions
 - **Completeness**: stubs, TODOs, unimplemented paths, dead code
@@ -95,61 +99,34 @@ TOUCHES: list of file paths this fix will modify
 ## Fix
 ## Cross-Repo Side Effects
 ## Verify
+## Resolution   <- appended when STATUS becomes done: date, commit, notes
 ```
+
+If the repo tracks work externally (td, Plane, etc.), mirror each concern per that repo's convention — e.g., a `PLANE: <id>` pointer line — so the repo's own triage tooling sees the work.
 
 #### Supporting files
 
-##### `plans/CONVENTIONS.md`
-
-Must contain all of the following sections:
-
-1. **File Format** — the full concern file template (STATUS, PRIORITY, REPOS, COMPLEXITY, TOUCHES, Problem, Evidence, Fix, Cross-Repo Side Effects, Verify, Resolution)
-2. **COMPLEXITY Field** — table mapping mechanical/architectural/research to meaning and model assignment
-3. **Plan Lifecycle** — state machine: `open → in-progress → done | blocked`. Instructions for starting work (set status, check DEPENDENCIES.md), completing work (set status, add Resolution section, do NOT delete the file), and handling blocks (set status, add BLOCKED_BY)
-4. **Resolution Format** — when STATUS becomes done, append: Completed date, PR/Commit link, Notes (anything surprising or learned)
-5. **Plan Structure** — each plan directory has `00-overview.md` (scope table, local deps, external deps, remediation order) plus numbered concern files
-6. **Cross-Plan Dependencies** — how `00-overview.md` owns local deps while `DEPENDENCIES.md` maps cross-plan edges
-7. **Learning From Completed Plans** — Resolution notes capture underestimates, overestimates, missed dependencies, wrong assumptions, and techniques that worked. Future analyses read these notes to calibrate severity, identify surprise-prone repos, and improve verification steps.
-
-##### `plans/README.md`
-
-Must contain:
-
-1. **Context line** — date, what was analyzed, relationship to prior runs if any
-2. **Plans table** — columns: #, Plan (linked), Concerns count, p0/p1/p2 counts, Status, Completed date
-3. **Batch Execution Order** — reference to DEPENDENCIES.md plus summary table (batch #, what plans/concerns, est. agents, model mix)
-4. **Execution Stats** (added during/after execution) — total concerns, agents by model, open items remaining
-5. **Calibration reference** — pointer to CALIBRATION.md if it exists
-6. **Adding a New Plan** — instructions: create dir, write 00-overview.md, write concern files, add to table, add edges to DEPENDENCIES.md
-
-##### `plans/DEPENDENCIES.md`
-
-Must contain:
-
-1. **Repo Dependency Graph** — ASCII diagram showing which repos import from which (protocol → trader/coordinator/researcher, contracts → researcher/coordinator, etc.)
-2. **Change Impact Matrix** — table with columns: Plan/Concern, Primary Repo, Must Also Change, Regression Risk. One row per concern that has cross-repo side effects. Include specific risk description (e.g., "if coordinator enforces sigs before researcher signs → all proposals rejected")
-3. **Atomic Groups** — list of concern sets that MUST ship together or in strict sequence. Explain why (shared file, protocol type change, etc.)
-4. **Sequential Constraints** — ordered pairs where A must complete before B, with rationale
-5. **Parallel-Safe** — list of concerns/plans that are safe to run independently
-6. **Batch Plan** — table: batch #, plans/concerns included, agent count, model assignment, rationale for grouping
+Create `plans/CONVENTIONS.md`, `plans/README.md`, and `plans/DEPENDENCIES.md` — full content specs for all three are in [references/plans-scaffold.md](references/plans-scaffold.md).
 
 #### Model assignment
 
 **By implementation complexity (for implementer agents):**
 | Tag | Model | Use when |
 |-----|-------|----------|
-| `mechanical` | haiku | Clear pattern, schema fix, config, single-file edit with < 10 files to read |
+| `mechanical` | sonnet (low effort) | Clear pattern, schema fix, config, single-file edit with < 10 files to read |
 | `architectural` | sonnet | System interactions, failure modes, cross-repo, or mechanical tasks needing 10+ file reads |
-| `research` | opus | Critical design decisions requiring deep reasoning about tradeoffs |
+| `research` | fable (fallback: opus) | Critical design decisions requiring deep reasoning about tradeoffs |
 
 **By team role (for non-implementer agents):**
 | Role | Model | Rationale |
 |------|-------|-----------|
-| Scout | haiku | Data gathering, no judgment needed |
+| Scout | sonnet (low effort) | Broad data gathering with structured output |
 | Dimension Analyst | sonnet | Structured analysis within one domain |
-| Synthesizer | opus | Cross-referencing, resolving contradictions, severity ranking |
-| Reviewer | opus | Judgment on correctness, completeness, and downstream implications |
-| Blocker Verifier | haiku | Simple existence/state checks |
+| Synthesizer | fable (fallback: opus) | Cross-referencing, resolving contradictions, severity ranking |
+| Reviewer | fable (fallback: opus) | Judgment on correctness, completeness, and downstream implications |
+| Blocker Verifier | sonnet (low effort) | Simple existence/state checks |
+
+Never assign haiku to any role — it is below the reliability bar here. When a mechanical concern's spec is fully self-contained (no live-state interrogation needed), routing it through the codex wrapper (`gpt-5.6-luna`/`-terra`) per the user's model-routing table is a valid cost play; otherwise default to sonnet.
 
 #### Dependency rules
 Each `00-overview.md` has:
@@ -167,9 +144,11 @@ Each `00-overview.md` has:
 
 Launch batched parallel agents with model overrides.
 
+Before the first batch, record each affected repo's baseline in `plans/<plan-name>/EXECUTION-LOG.md`: repo root, branch, HEAD SHA, and `git status --porcelain` output (pre-existing dirty/untracked files). All later diffs are taken per-repo against this baseline — one `git diff` cannot span multiple repos, and without a baseline, pre-existing user changes get misattributed to agents.
+
 #### Batch formation
-1. **BATCH -1 — STATUS VERIFICATION**: Before regression checks, launch haiku agents to verify each "open" concern is actually open in source. Run 3 found 42% of "open" concerns were already fixed with stale STATUS. This pass avoids wasting execution agents on no-ops. Each agent reads the relevant file and reports DONE / NOT_DONE. Mark verified-done concerns immediately.
-2. **BATCH 0 — REGRESSION CHECK**: If prior-run reconciliation flagged potential regressions (done items that fresh analysis questions), launch read-only haiku verification agents FIRST. Each reads the specific file and reports FIXED / NOT_FIXED. Results determine which items need new concerns vs can be closed. Do not skip this — Run 2 found 6 of 7 regression checks were NOT_FIXED.
+1. **BATCH -1 — STATUS VERIFICATION**: Before regression checks, launch sonnet (low effort) agents to verify each "open" concern is actually open in source. Run 3 found 42% of "open" concerns were already fixed with stale STATUS. This pass avoids wasting execution agents on no-ops. Each agent runs the concern's `## Verify` procedure (checking every TOUCHES file, not just one) and reports DONE / PARTIAL / NOT_DONE with file:line evidence. Only evidence-backed DONE closes a concern; PARTIAL stays open with a note on what remains.
+2. **BATCH 0 — REGRESSION CHECK**: If prior-run reconciliation flagged potential regressions (done items that fresh analysis questions), launch read-only sonnet (low effort) verification agents FIRST. Each reads the specific file and reports FIXED / NOT_FIXED. Results determine which items need new concerns vs can be closed. Do not skip this — Run 2 found 6 of 7 regression checks were NOT_FIXED.
 3. Start with zero-blocker tasks
 4. Model by COMPLEXITY tag (see mapping above)
 5. **SAME-FILE RULE**: Tasks whose TOUCHES overlap MUST be in the same agent or sequential batches
@@ -177,9 +156,18 @@ Launch batched parallel agents with model overrides.
 7. **HIGH-TRAFFIC FILE RULE**: If 3+ concerns touch the same file (e.g., a service's index.ts), strongly prefer a SINGLE agent for all of them. Run 2's audit found 5 of 8 issues originated from multi-agent edits to coordinator/index.ts.
 8. **SHARED-TYPE FIELD RULE**: When a concern adds a required field to a shared type (e.g., protocol's `BacktestResult`), the same agent (or batch) must also update ALL constructors of that type across all repos. Run 4's audit found a new `winRate` field added to the type but missing from the sandbox constructor — broke all job submissions.
 9. Max 10 agents per batch
+10. **OPTIONAL-FIRST RULE**: When adding a field to a schema/type consumed by multiple repos, make it `.optional()` initially. Only make it required after ALL producers are updated to include it. Run 13 added a required `signature` field to a protocol schema — the coordinator's broadcast function didn't include it, silently breaking all downstream consumers. Pattern: add as optional → update all producers → flip to required — and the flip MUST happen in the same run. Never close a plan with a security-relevant field (signature, auth, permission) still optional; if temporary absence would weaken an invariant, update all producers and consumers atomically in one agent instead (see CROSS-REPO ATOMIC RULE).
+11. **SEMANTIC VERIFICATION RULE**: Agents must verify the semantic meaning of operations, not just mechanical correctness. When incrementing a counter or modifying a field, ask: "does this operation belong in this instruction/function?" Run 13 found `proposals_accepted` correctly incremented with checked arithmetic inside `submit_proposal` — but submission ≠ acceptance, so the increment was semantically wrong despite being mechanically sound.
+
+#### Isolation (mandatory for parallel batches)
+TOUCHES analysis *predicts* conflicts; isolation *enforces* them away — TOUCHES lists are guesses made before the code was read. For any batch with more than one implementer:
+- Give each implementer `isolation: 'worktree'`. Each agent commits only inside its own worktree; the orchestrator reviews each isolated diff, merges the batch branches sequentially in dependency order, and reruns verification on the merged state.
+- If worktree isolation is unavailable, serialize the implementers — never run two write-capable agents in the same working tree.
+
+Single-agent batches may edit in place, leaving changes uncommitted for the orchestrator.
 
 #### Pre-batch blocker verification
-Before each batch, launch haiku agents to verify each BLOCKED_BY claim using its VERIFY_BLOCKER check. False blockers get promoted into the current batch.
+Before each batch, launch sonnet (low effort) agents to verify each BLOCKED_BY claim using its VERIFY_BLOCKER check. False blockers get promoted into the current batch.
 
 #### Context propagation
 When an agent edits a file that was modified in a previous batch, its prompt MUST include:
@@ -196,81 +184,31 @@ CROSS-REPO CONTRACT:
 ```
 
 #### Per-agent prompt template
-```
-You are implementing the plan at {plan_file_path}
 
-TASK: {description}
-
-{PRIOR CHANGES if applicable}
-{CROSS-REPO CONTRACTS if applicable}
-
-RULES:
-- If you use SQL DDL + application queries, verify the queries don't assume constraints/indexes the DDL didn't create
-- If you instantiate a component, verify it's wired to its consumer AND cleaned up in shutdown
-- If you modify a shared type/interface, all downstream consumers (including tests) must be updated to match
-- If you embed dynamic values in code strings, sanitize them (e.g., JSON.stringify) before interpolation
-- If you track entities by identity key (user, researcher, node), use ONE consistent key type everywhere (e.g., pubkey). Do NOT mix peerId, pubkey, and proposalId — this silently breaks lookups across components.
-- If you emit a metric (counter.inc, histogram.observe), verify it fires only on actual state transitions, not intermediate events. A 3-node redundancy job must only inc(finalized) once, not on each partial result.
-- If you pass a snapshot/value to an adapter or downstream consumer, verify the consumer actually reads it. Pattern to avoid: caller passes PnLSnapshot, adapter ignores it and re-reads live state.
-- If you add a periodic timer/sweep (setInterval), grep the codebase first for existing timers on the same resource. Two sweeps on the same queue create races.
-- If you track child process PIDs for shutdown, register the PID BEFORE the async work completes — not after. A PID registered after the process exits is useless or dangerous (PID recycling).
-- `side === 'sell'` is NOT a reliable proxy for "close order" — only `reduceOnly` is
-- `as any` casts on proto/gRPC types hide silent failures — flag these and avoid adding new ones
-- If you change a function's return type to `Promise<T>` (making it async), grep for ALL callers and update them to `await`. Missing `await` assigns a Promise object instead of the resolved value — silent critical bug.
-{additional rules from CALIBRATION.md RULES section, if they exist}
-
-1. Read the relevant source files first
-2. {instructions from Fix section}
-3. Write the code. Edit existing files. Don't restructure.
-
-IMPORTANT: If you discover the task is already done, partially done,
-or blocked differently than expected, REPORT THIS instead of forcing.
-```
+Use the per-agent prompt template in [references/agent-prompts.md](references/agent-prompts.md).
 
 #### Inline review (per batch)
 
-After each batch of implementers completes, run an **opus reviewer** before advancing to the next batch.
+After each batch of implementers completes, run a **fable reviewer** (fallback: opus) before advancing to the next batch.
 
 | Step | Role | Model | Input | Output |
 |------|------|-------|-------|--------|
-| 1 | **Reviewer** | opus | All diffs from this batch + their concern files + PRIOR CHANGES context | Pass/fail per agent + issues list with severity |
+| 1 | **Reviewer** | fable (fallback: opus) | All diffs from this batch + their concern files + PRIOR CHANGES context | Pass/fail per agent + issues list with severity |
 | 2 | **Fixer** | sonnet (or per-complexity) | Reviewer's issues list | Targeted fixes for failed items |
 
-**Reviewer prompt template:**
-```
-You are reviewing the output of {N} implementation agents for correctness, completeness, and consistency.
-
-BATCH DIFFS:
-{for each agent: concern title, concern file contents, git diff}
-
-REVIEW CHECKLIST:
-- Does each diff fully implement its concern's Fix section?
-- Are shared types/interfaces consistent across all diffs in this batch?
-- Are all new async functions awaited at call sites?
-- Are new required fields propagated to ALL constructors/object literals?
-- Do replacement methods fully replace old callers (zero remaining)?
-- Are cross-repo contracts honored?
-- Any security issues (injection, as any, unhandled rejections)?
-{additional rules from CALIBRATION.md RULES section, if they exist}
-
-For each agent, output:
-- PASS or FAIL
-- If FAIL: specific issues with file:line references and severity (critical/minor)
-- If the issue is a cross-agent inconsistency, flag BOTH agents
-
-IMPORTANT: Be precise. A false FAIL wastes a fixer round. A false PASS lets bugs through to audit.
-```
+**Reviewer prompt template:** use the reviewer prompt template in [references/agent-prompts.md](references/agent-prompts.md).
 
 **When to skip inline review:**
-- Batch contains only haiku mechanical fixes (< 3 files each, no shared types)
+- Batch contains only mechanical fixes (< 3 files each, no shared types)
 - Batch is a status verification or regression check (BATCH -1/0)
 
 **Why this matters:** Run 2's 5/8 audit issues and Run 4's missing winRate propagation would have been caught here instead of in the post-hoc audit, saving a full loop cycle.
 
 #### After each batch (post-review)
 - Update todos
-- Scorecard (task, model, time, result, review pass/fail)
-- Build shared-file changelog for next batch's context propagation
+- Classify each agent result SUCCESS / PARTIAL / FAILED. For PARTIAL or FAILED: preserve the diff, then either retry once with a narrowed prompt or fold the remainder into the fixer round. Never mark a concern done without verification evidence.
+- Append to `plans/<plan-name>/EXECUTION-LOG.md` under a `## Batch N` heading: the scorecard (concern id, model, time, result, review pass/fail) and the shared-file changelog the next batch's PRIOR CHANGES context is built from
+- After inline review passes, merge worktree branches (or commit in-place edits) using the repo's commit format, gated on the user's batch approval; record commit hashes in each concern's Resolution
 - Check: did this batch unblock new tasks?
 
 **Gate**: User approves next batch (or "keep going" for autonomous).
@@ -282,40 +220,16 @@ IMPORTANT: Be precise. A false FAIL wastes a fixer round. A false PASS lets bugs
 **Mandatory.** After all execution batches complete. With inline review catching per-batch issues, this phase focuses on **cross-batch consistency** — problems that only become visible when viewing all changes together.
 
 #### 4a: Self-check
-- `tsc --noEmit` across affected repos
-- Run existing test suites
-- Grep for `TODO`, `FIXME`, `HACK` introduced by agents
+- For each affected package/repo, run its declared verification gate — from its CLAUDE.md, CI config, or package scripts (typecheck, build, tests, custom validators). Fall back to the toolchain default (`tsc --noEmit`, `cargo check` + `cargo test`, ...) only when no gate is declared.
+- Record each command and its exit status. Treat unavailable required tooling as UNVERIFIED, never as passed.
+- Check added diff lines (not the whole tree) for newly introduced `TODO`, `FIXME`, `HACK`.
 
 #### 4b: Cross-batch consistency review
-Launch an **opus audit agent** with the full `git diff` across ALL batches (not per-repo — the whole picture). This is the highest-value use of opus: reasoning about systemic consistency across many changes.
+Launch a **fable audit agent** (fallback: opus) with per-repo diffs taken against the baselines recorded in EXECUTION-LOG.md — including newly untracked files and worktree-branch commits — aggregated into one manifest covering ALL batches. One `git diff` cannot span multiple repos; the aggregate manifest is the whole picture. This is the highest-value use of the judgment tier: reasoning about systemic consistency across many changes.
 
-Check for:
+Check for the failure patterns catalogued in `references/audit-checklist.md` (in this skill's directory). Read that file and paste its full checklist into the audit agent's prompt — it covers multi-agent conflicts, incomplete wiring, protocol/type drift, SQL mismatches, security, cross-repo consistency, identity-key confusion, metrics double-counting, dead imports, duplicate timers, async call-site drift, required-field propagation, replacement-method wiring, schema optionality drift, and auditor trace depth.
 
-**Multi-agent conflicts**: fields added but not used by another agent, duplicate definitions, inconsistent imports
-
-**Incomplete wiring**: `new X()` not passed to consumer, async methods with sync call sites, modules created but not imported
-
-**Protocol/type drift**: test files using old type shapes, validation schemas out of sync with interfaces, IDL/proto field name mismatches with application code
-
-**SQL mismatches**: application code assuming constraints migrations didn't create, missing indexes for query patterns
-
-**Security**: template injection, `as any` casts, non-null assertions on optional fields, unhandled promise rejections
-
-**Cross-repo consistency**: canonicalization functions producing different output, signing/verification algorithm mismatches
-
-**Identity key confusion**: components using different keys for the same entity (pubkey vs peerId vs proposalId). Check that Maps, lookups, and stores all use the same key type for a given entity.
-
-**Metrics double-counting**: metrics incremented on intermediate events (every partial result) instead of only on state transitions (actual finalization). Check that counters inside loops or callback handlers fire at the right granularity.
-
-**Dead imports**: one agent imports a metric/function, another agent moves the actual usage to a different file. Grep for unused imports in modified files.
-
-**Duplicate timers/sweeps**: two agents both add setInterval for the same resource (e.g., queue processing). Check for multiple timers targeting the same Redis key or data structure.
-
-**Async call-site drift**: functions changed from sync to async (`Promise<` return type) but callers not updated with `await`. Grep modified files for new `async` keywords and verify all call sites use `await`. Run 3's only critical audit finding was this exact pattern.
-
-**New required field propagation**: if a shared type gained a new required field, grep for all object literals / constructors that build that type across all repos. Verify each includes the new field. Run 4 found sandbox.ts constructing BacktestResult without a newly-added `winRate` field — broke all job submissions.
-
-**Replacement method wiring**: if a new method was added to replace an old pattern (e.g., atomic LPOP replacing peek+remove), grep for the OLD method name and verify zero callers remain. Run 4 found `dequeueNextProposal()` added but `processQueuedProposals()` still calling the old `getNextQueuedProposal()` + `dequeueProposal()` pair.
+Also run `/blind-review` in parallel — and do not give it this checklist.
 
 #### 4c: Decision
 - Minor (< 5 mechanical) → fix inline
@@ -330,7 +244,7 @@ Check for:
 
 - Update plan files: STATUS, Resolution notes
 - Update README with stats
-- Append to `plans/CALIBRATION.md` HISTORY section
+- Append to `plans/CALIBRATION.md` HISTORY section. If the file doesn't exist, create it with two sections: `## RULES` (one imperative bullet per project-specific rule, suffixed with its source run and, once calibrated, `[baked into skill YYYY-MM-DD]`) and `## HISTORY` (one `### Run N` block per run: date, scope, concerns done/open, surprises, false positives)
 - **Ask the user**: "Run `/remediate calibrate` to bake learnings into the skill?"
 
 ---
@@ -339,26 +253,7 @@ Check for:
 
 **Scope**: `/remediate calibrate`
 
-This command reads `plans/CALIBRATION.md` and **rewrites sections of this skill file** based on the learnings.
-
-Steps:
-1. Read `plans/CALIBRATION.md` — extract the RULES section and HISTORY section
-2. Read this skill file (`${CLAUDE_SKILL_DIR}/SKILL.md`)
-3. **Filter**: only take learnings that improve the remediation **process** — how to analyze, plan, batch, execute, or audit. Discard codebase-specific implementation rules (e.g., "use canonicalJson for signing", "clear epoch accumulators at midnight"). Those belong in CALIBRATION.md where they're injected at runtime via `{additional rules from CALIBRATION.md}` in the prompt template.
-4. For each process-level learning, determine which section of the skill it applies to:
-   - Analysis quality → Phase 1 (e.g., "verify math direction with concrete values before implementing")
-   - Batch coordination → batch formation rules (e.g., "when adding a required field to a shared type, include constructor updates in same agent")
-   - Multi-agent failure patterns → Phase 4 audit checklist (e.g., "check that new methods actually replaced old callers")
-   - Model assignment → COMPLEXITY table
-5. Present the diff to the user for approval before writing.
-
-**What belongs in the skill vs CALIBRATION.md**:
-- **Skill**: process rules that apply to ANY codebase. "Verify direction with concrete values." "Audit for unwired replacement methods." "Group shared-type field additions with constructor updates."
-- **CALIBRATION.md**: project-specific implementation rules. "Use canonicalJson for signing." "Clear epochImpacts on rollover." "Register PIDs before sandbox completes." These are injected into agent prompts at runtime and don't need to be in the skill.
-
-**What this means**: The skill stays lean and portable. CALIBRATION.md captures project-specific knowledge that agents need at runtime. Both evolve, but through different channels.
-
-After calibration, CALIBRATION.md's RULES section can note "baked into skill on YYYY-MM-DD" for each rule that was applied, so future runs don't re-apply the same rule.
+This command reads `plans/CALIBRATION.md` and **rewrites sections of this skill file** based on the learnings. Full procedure, filter rules, and skill-vs-CALIBRATION.md boundaries: [references/calibrate.md](references/calibrate.md).
 
 ---
 
@@ -370,20 +265,6 @@ After calibration, CALIBRATION.md's RULES section can note "baked into skill on 
 | `repos/<name>` or `<path>` | Analyze single repo or directory |
 | `plans/` | Skip Phase 1-2, execute existing plans |
 | `plans/security-auth` | Execute single plan |
-| `batch 3` | Resume from specific batch |
-| `audit` | Skip to Phase 4 on recent changes |
+| `batch 3` | Resume: read DEPENDENCIES.md's Batch Plan + EXECUTION-LOG.md, verify batches < N are logged complete, rebuild PRIOR CHANGES from the changelog sections. Reject the scope if EXECUTION-LOG.md is missing or incompatible |
+| `audit` | Skip to Phase 4, diffing against EXECUTION-LOG.md baselines; if none exist, ask the user for an explicit base ref |
 | `calibrate` | Read CALIBRATION.md and rewrite this skill |
-
-## Key Behaviors
-
-- **Never guess file contents** — always read before editing
-- **Preserve existing patterns** — match codebase style
-- **Track progress** — TodoWrite for batch tracking
-- **Report as agents complete** — don't wait for all
-- **Verify blockers at execution time** — don't trust the plan blindly
-- **Propagate context between batches** — agents must know what previous agents did
-- **Include cross-repo contracts in prompts** — agents must know the interface they implement against
-- **Agents report anomalies** — don't force, report
-- **Use opus for judgment, not volume** — opus reviews, synthesizes, and arbitrates; it doesn't do bulk implementation
-- **Team composition is complexity-gated** — simple runs use flat parallel agents; large cross-repo runs use Scout → Analyst → Synthesizer teams
-- **Inline review before next batch** — catch issues while context is fresh, not in a monolithic post-hoc audit
