@@ -1,8 +1,7 @@
 ---
 name: plan
-description: Decompose a feature, migration, or initiative into structured plans with dependency graphs and batched parallel execution. Use when the user describes something they want to BUILD (not fix).
+description: Decompose a feature, migration, or initiative into a persistent plans/<name>/ directory of concern docs (STATUS/PRIORITY/COMPLEXITY/TOUCHES/BLOCKED_BY frontmatter) with dependency graphs and optional batched parallel execution. Use when the user wants to BUILD something non-trivial — "plan this", "break this down", "scope this migration", "make a plan for X" — not to fix what's broken (/remediate), not for small direct edits (just make them), and not for pure fleet dispatch of already-planned units (/squad). Also handles executing or auditing an existing plans/<name> directory ("execute plans/<name>", "/plan audit") and "/plan calibrate". Feeds the /plan-to-plane → /promote-issue → /claim-and-implement pipeline.
 argument-hint: "<goal>"
-disable-model-invocation: true
 ---
 
 # Plan
@@ -12,10 +11,51 @@ Decompose a goal into structured, executable plans. Then optionally execute them
 Unlike `/remediate` (reactive — find what's broken, fix it), `/plan` is proactive — the user has a goal, this skill decomposes it into work.
 
 ```
-EXPLORE → DESIGN → DECOMPOSE → (optional) EXECUTE → AUDIT → CLOSE
-                ↑___________________________________|
-        AUDIT escalates to DESIGN on a design-level failure, or loops to DECOMPOSE on an implementation failure
+WIP-CHECK → EXPLORE → DESIGN → DECOMPOSE → (optional) EXECUTE → AUDIT → CLOSE
 ```
+
+**Gate policy (headless).** Interactive runs stop at every gate below. Headless runs (background job, cron, or a research→plan→implement pipeline) generalize the Phase 0 rule to all gates: the EXPLORE, DESIGN, and DECOMPOSE gates degrade to recorded checkpoints — write the landscape, design brief, and decomposition to the plan dir and note "auto-approved: headless" plus any assumptions made in `00-overview.md` under `## Notes`. EXECUTE never auto-starts headless unless the invoking pipeline explicitly authorized execution; the default headless terminal state is a decomposed plan, stopped after DECOMPOSE with the open choices reported. Headless auto-approval governs `/plan`'s own phase checkpoints and never overrides a concern's `MODE: hitl` — an agent answering the human's side of a decision is a correctness violation, not initiative.
+
+---
+
+### Phase 0: WIP-CHECK (pre-flight)
+
+**Why this phase exists.** `/plan` is cheap to invoke; plan doc completion is invisible. Without a forcing function, plans accumulate: 30+ on-disk directories, 200+ concerns marked `STATUS: open` long after the underlying work shipped. The pile looks infinite because the sink is plugged — STATUS never gets updated, so the counter only ever goes up. This phase makes the pile visible before a new one is added to it.
+
+**What to do:**
+
+1. Run the WIP scanner against the repo root:
+
+   ```bash
+   python3 ~/.claude/skills/wip/lib/scan.py <repo-root> --format summary --rank
+   ```
+
+2. If the output shows **0 plans with open concerns**, proceed silently to Phase 1. Clean slate — no forcing function needed.
+
+3. Otherwise, show the user the ranked table (or at minimum the top 10) and ask an explicit question:
+
+   > You have **N plans with open concerns** (oldest: `<plan>` at `<date>`). Options:
+   >
+   > - **resume one** — I'll hand off the next unblocked concern in that plan via `/wip resume <plan>`
+   > - **triage one** — walk its open concerns interactively and close the ones that are already done (`/wip triage <plan>`)
+   > - **sync first** — run `/sync-plans` to pull current Plane state for promoted concerns (closes the easy cases automatically)
+   > - **proceed anyway** — start this new plan on top of the existing pile (say "proceed")
+   >
+   > How do you want to move?
+
+4. **In interactive sessions, do not proceed to Phase 1 without an answer.** Auto-mode is not a license to skip this — the forcing function only works if it fires. The exception: if the user's original `/plan <goal>` invocation was explicitly framed as "continue X" or "supersede X", treat that as equivalent to a pre-answered prompt and skip the question. The same applies when the invocation targets an existing plan (`plans/<name>`, `execute plans/<name>`, or `audit`): resuming existing work is the gate's desired outcome, so skip Phase 0 entirely.
+
+5. Escape hatches:
+   - User says "just plan anyway" or equivalent → proceed to Phase 1, note the choice in the final report.
+   - User says "resume X" → hand off to `/wip resume X` and terminate this `/plan` invocation.
+   - User says "triage X" → hand off to `/wip triage X` and terminate.
+   - User says "sync first" → run `/sync-plans`, then re-run Phase 0.
+
+6. **Headless runs** (background job, cron, or a pipeline like research→plan→implement): the gate cannot block on a human, and deadlocking the pipeline is worse than skipping the question. Instead: still run the scanner, record the snapshot in the new plan's `00-overview.md` under `## Notes` ("proceeded over N open plans; oldest: `<plan>` at `<date>`"), and continue to Phase 1. The forcing function fires at the next interactive `/plan` or `/wip` — the debt is logged, not hidden.
+
+**Gate:** user has picked one of (resume / triage / sync / proceed / cancel). Silent progression is not allowed.
+
+**Why the gate is load-bearing:** without it, the scanner is noise. The friction is the feature — one explicit "are you sure you want to start another one?" at the right moment is worth more than any post-hoc tooling.
 
 ---
 
@@ -39,17 +79,17 @@ Output: a **landscape summary** — what exists, what's relevant, what the goal 
 
 Make architectural decisions before writing concern files.
 
-**For simple goals**, skip this phase — go straight to DECOMPOSE.
+**For simple goals** — one concern, no architectural choice, no cross-repo effect, no new external dependency — skip this phase: omit `DESIGN.md` and record the chosen approach in `00-overview.md` under `## Notes`. Anything else runs DESIGN.
 
 **For non-trivial goals**, use the adversarial design team:
 
 | Round | Role | Model | Count | Input | Output |
 |-------|------|-------|-------|-------|--------|
 | 1 | **Designer** | sonnet | 1 | Landscape summary + goal | Draft design: 2-3 approaches with tradeoffs, key decisions, risks, recommendation |
-| 2 | **Red Team** | opus | 2 (parallel) | Draft design + landscape | Critique: failure modes, scaling issues, edge cases, missed alternatives, wrong assumptions |
-| 3 | **Arbiter** | opus | 1 | Design + both critiques | Final design: resolves concerns, strengthens weak points, makes the call |
+| 2 | **Red Team** | fable (opus when unavailable) | 2 (parallel) | Draft design + landscape | Critique: failure modes, scaling issues, edge cases, missed alternatives, wrong assumptions |
+| 3 | **Arbiter** | fable (opus when unavailable) | 1 | Design + both critiques | Final design: resolves concerns, strengthens weak points, makes the call |
 
-**Why adversarial design**: A single agent designing in isolation produces plausible designs that miss failure modes. The epsilon false-fix in Run 4 was exactly this — a single-agent analysis error. Two opus red teamers arguing with the design catches the "this works until..." class of issues before any code is written.
+**Why adversarial design**: A single agent designing in isolation produces plausible designs that miss failure modes. A past run shipped a confident "fix" that turned out to be a no-op precisely because one agent analyzed the problem alone and nothing attacked its reasoning. Two red teamers arguing with the design catches the "this works until..." class of issues before any code is written.
 
 **Red Team prompt template:**
 ```
@@ -82,8 +122,15 @@ Be specific. "This might not scale" is useless. "With 1000 concurrent writers, t
 
 Output: a **design brief** — approach chosen, key decisions made, risks identified, red team concerns addressed.
 
-Write to `plans/####-<goal-name>/DESIGN.md`:
-The #### should be a logical increment from the last plan in the repo.
+**Writing standard for `DESIGN.md`:**
+- Write for a staff engineer reviewing direction, not for an implementer reading source.
+- Keep it short: target 1-2 pages.
+- Use Markdown headings, bullets, and small tables only.
+- Do not include code, file-level diffs, API payloads, or low-level implementation steps.
+- Name the user-visible outcome, system boundary, tradeoffs, risks, and the chosen path.
+- If source-level detail matters, put it in concern files under `## Approach`, not in `DESIGN.md`.
+
+Write to `plans/<goal-name>/DESIGN.md`:
 ```markdown
 # Design: <goal>
 
@@ -98,20 +145,66 @@ The #### should be a logical increment from the last plan in the repo.
 
 **Gate**: User approves design before decomposition. Open questions must be resolved.
 
+**DESIGN exit path**: if Open Questions can't resolve this session, do not force-decompose — write `plans/<name>/` now with each open question as a decision concern (`MODE: hitl` for preference/judgment calls, `COMPLEXITY: research` for investigable ones), `BLOCKED_BY` chains where decisions depend on each other, remaining fog filed in `00-overview.md`'s `## Not yet specified`, and the line `DECOMPOSE: pending` under `## Notes`. Offer `/plan-to-plane` filing for the decision concerns. Resolve one at a time, recording its gist row, STATUS, and fog graduation before starting the next — there is no per-session ticket limit, only the invariant that every resolution gets recorded before moving on. Headless: this replaces force-decomposition as the terminal state.
+
 ---
 
 ### Phase 3: DECOMPOSE
 
 Break the design into executable concern files. Same structure as `/remediate` plans.
 
+**Fog test**: write a concern only when the underlying question is *phrasable precisely now*, even if it isn't yet answerable. A question that's still too vague to phrase precisely stays a single loose bullet in `## Not yet specified` — never pre-sliced into concern-sized pieces before it's ripe.
+
 #### Plan directory
 ```
-plans/####-<goal-name>/
+plans/<goal-name>/
 ├── DESIGN.md              # From Phase 2
 ├── 00-overview.md          # Scope, deps, remediation order
 ├── 01-concern.md           # First task
 ├── 02-concern.md           # Second task
 └── ...
+```
+
+#### Human-readable plan docs
+
+`DESIGN.md` and `00-overview.md` are product and architecture orientation docs. They must be concise, readable Markdown.
+
+Rules:
+- Staff-level, human-understandable summary.
+- No code blocks.
+- No source walkthroughs.
+- No generated-sounding filler.
+- Prefer bullets and short tables over paragraphs.
+- Explain what changes, why it matters, what order to do it in, and what can run in parallel.
+- Leave file paths and implementation detail to the concern files.
+
+`00-overview.md` should fit on one screen where possible:
+```markdown
+# <Goal>
+
+## Outcome
+- What the user or operator gets when this ships.
+
+## Work
+| Concern | Why it exists | Complexity | Touches |
+
+## Order
+| Batch | Concerns | Why together |
+
+## Dependency graph
+| Concern | Blocked by | 30s check |
+
+## Not yet specified
+- (none)
+
+## Out of scope
+- <what was ruled out> — why — link to the cancelled concern
+
+## Decisions so far
+- [<concern title>](NN-file.md) — <one-line gist>
+
+## Notes
+- Only decisions a human needs before starting.
 ```
 
 #### Concern file format
@@ -122,6 +215,9 @@ PRIORITY: p0 | p1 | p2
 REPOS: affected repos
 COMPLEXITY: mechanical | architectural | research
 TOUCHES: list of file paths this will create or modify
+BLOCKED_BY: NN, NN   (optional — sibling concern numbers. Duplicate every dependency edge here, not only in 00-overview.md: /plan-to-plane's Todo-vs-Backlog state mapping and /wip resume's unblocked filter read BLOCKED_BY from this frontmatter; only Plane relation creation falls back to the overview table)
+MODE: hitl | afk   (optional, default afk — hitl means only a human may resolve this; autonomous consumers must not claim it. MODE is the ownership axis, COMPLEXITY the effort axis; they compose. Unrecognized values are treated as hitl.)
+PLANE: <PROJECT>-<NN>   (optional — added by /plan-to-plane when the concern is filed; /plan-to-plane keys off it for idempotency, /sync-plans for state reconciliation, and /claim-and-implement preserves it for traceability, so never strip it)
 
 ## Goal
 What this concern achieves (not what's broken — what's being built).
@@ -138,21 +234,9 @@ How to confirm this works.
 
 #### Model assignment
 
-**By implementation complexity (for implementer agents):**
-| Tag | Model | Use when |
-|-----|-------|----------|
-| `mechanical` | haiku | Clear implementation, schema, config, boilerplate, < 10 files |
-| `architectural` | sonnet | System integration, cross-repo, new abstractions, 10+ files |
-| `research` | opus | Critical design decisions requiring deep reasoning about tradeoffs |
-
-**By team role (for non-implementer agents):**
-| Role | Model | Rationale |
-|------|-------|-----------|
-| Designer | sonnet | Produces draft designs — good enough for red team to attack |
-| Red Team | opus | Finding non-obvious failure modes requires strongest reasoning |
-| Arbiter | opus | Resolving conflicting critiques, making the final call |
-| Reviewer | opus | Judgment on correctness, completeness, downstream implications |
-| Scout/Verifier | haiku | Data gathering, existence checks |
+Judgment roles (red team, arbiter, reviewer) run on fable, falling back to opus when fable is unavailable.
+Implementation runs on sonnet.
+Scouts and verifiers run on sonnet at low effort — never haiku.
 
 #### Dependency graph
 Create `00-overview.md` with:
@@ -169,129 +253,38 @@ Before finalizing the plan, check: do any concerns have overlapping TOUCHES? If 
 - Mark as sequential with explicit ordering, OR
 - Note which agent gets priority and what context the later agent needs
 
-#### Cost & scale estimate
-Before presenting, tally the planned fan-out: count agents by model across all batches (implementers by COMPLEXITY tag + the per-batch opus reviewer + the audit agent). Present this at the gate as `N haiku + M sonnet + K opus agents across B batches`, so the user can cut **scope** — not quality — if it's too large. The human already approves the decomposition; surfacing the cost here makes that approval informed instead of discovering the bill after the fact.
-
-**Concern-count ceiling**: if a single plan carries more than ~12 `architectural`/`research` concerns, treat that as a signal the goal is too big for one plan — propose splitting it. A bloated plan is a scoping problem, never a model-assignment problem. Do **not** "solve" it by downgrading concerns below their COMPLEXITY tag; that trades correctness for cost and breaks the reason each tag exists (see Phase 4 budget circuit-breaker).
-
-**Gate**: Present the decomposition to user. Confirm concern list, batch order, complexity assignments, and the cost/scale estimate.
+**Gate**: Present the decomposition to user. Confirm concern list, batch order, and complexity and mode assignments. Offer to file the plan to Plane via `/plan-to-plane` — filing at decompose time (rather than remembering at CLOSE) is what makes `/sync-plans` and `/promote-issue` able to track the work.
 
 ---
 
 ### Phase 4: EXECUTE (optional)
 
-User can say "execute" or "just plan" (skip to CLOSE).
-
-If executing, follow the same rules as `/remediate` Phase 3:
-
-#### Batch formation
-1. Zero-blocker tasks first
-2. Model by COMPLEXITY tag
-3. **SAME-FILE RULE**: overlapping TOUCHES → same agent or sequential
-4. **CROSS-REPO ATOMIC RULE**: shared type changes → same agent/batch for all consumers
-5. Max 10 agents per batch
-
-#### Pre-batch blocker verification
-Before each batch, verify BLOCKED_BY claims are still real.
-
-#### Context propagation
-Later agents get PRIOR CHANGES summaries for shared files.
-Cross-repo agents get CONTRACT specifications.
-
-#### Per-agent prompt template
-```
-You are implementing the plan at {plan_file_path}
-
-TASK: {description}
-
-{PRIOR CHANGES if applicable}
-{CROSS-REPO CONTRACTS if applicable}
-
-RULES:
-- If you use SQL DDL + application queries, verify the queries don't assume constraints/indexes the DDL didn't create
-- If you instantiate a component, verify it's wired to its consumer AND cleaned up in shutdown
-- If you modify a shared type/interface, all downstream consumers (including tests) must be updated to match
-- If you embed dynamic values in code strings, sanitize them before interpolation
-{additional rules from CALIBRATION.md if it exists}
-
-1. Read the relevant source files first
-2. {instructions from Approach section}
-3. Write the code. Edit existing files where possible. Create new files only when necessary.
-
-IMPORTANT: If you discover the task is already done, partially done,
-or blocked differently than expected, REPORT THIS instead of forcing.
-```
-
-#### Inline review (per batch)
-
-After each batch of implementers, run an **opus reviewer** before advancing. Same mechanism as `/remediate`:
-
-| Step | Role | Model | Input | Output |
-|------|------|-------|-------|--------|
-| 1 | **Reviewer** | opus | All diffs from this batch + their concern files | Pass/fail per agent + issues list with severity |
-| 2 | **Fixer** | sonnet (or per-complexity) | Reviewer's issues list | Targeted fixes for failed items |
-
-**When to skip:** Batch contains only haiku mechanical fixes (< 3 files each, no shared types).
-
-See `/remediate` Phase 3 for the full reviewer prompt template.
-
-#### Checkpoint per batch (git-native)
-Use git as the rollback boundary — never hand-snapshot a subset of touched files (that loses atomicity and leaves the tree half-reverted).
-- **Before batch N**: confirm a clean baseline. The working tree should be committed (or stashed) so the batch starts from a known-good state. Record that commit as `checkpoint-batch-{N-1}` (a tag or noted SHA).
-- **After batch N passes inline review**: commit the batch as one atomic unit and tag it `checkpoint-batch-{N}`. This is the green state the next batch builds on.
-- **On audit failure for batch N** (see Phase 5): `git reset --hard checkpoint-batch-{N-1}` back to the last green state, then re-decompose (or re-design) rather than patching a corrupted tree forward.
-
-This mirrors the worktree-isolation + proven-merge model the squad fleet uses: every unit lands from a known-good base or not at all. The inline reviewer (above) already catches most single-batch defects before they land — the checkpoint's real value is **cross-batch** failures that only surface in AUDIT, where you need a clean point to roll back to.
-
-#### Autonomous budget circuit-breaker
-When the user says "keep going" (no per-batch gate), keep a running tally of agents spawned by model. If it crosses the Phase 3 estimate by a meaningful margin, **pause and ask** — report cost so far, concerns remaining, and offer continue / cut scope / stop. **Never** silently downgrade a concern below its COMPLEXITY tag, and never skip the opus reviewer or audit agent to stay under budget: a missed cross-batch bug costs a full loop cycle — far more than the model call it saved. The whole "opus for judgment" design exists because cheap bugs caught late are expensive. Budget forces scope reduction *with a human in the loop*, not quality reduction behind their back.
-
-#### After each batch (post-review)
-- TodoWrite progress update
-- Scorecard (task, model, time, result, review pass/fail)
-- Commit/tag the batch as `checkpoint-batch-{N}` (the rollback boundary for the next batch)
-- Shared-file changelog for next batch
-- Unblocked task check
-
-**Gate**: User approves each batch (or "keep going" for autonomous — subject to the budget circuit-breaker above).
+Full phase body: `references/execute.md` (execution engine, batch formation, prompt templates, inline review).
+- **Isolation**: parallel implementers never share a working tree — every multi-agent batch gets `isolation: 'worktree'` (or is dispatched to the /squad fleet).
+- **Crash recovery**: prefer the Workflow tool (3+ concerns) so a dead session resumes via `resumeFromRunId` with completed concerns returned cached.
 
 ---
 
 ### Phase 5: AUDIT
 
-If Phase 4 was executed, audit is **mandatory**. Same as `/remediate`:
-
-#### 5a: Self-check
-- Type check / lint / build across affected repos
-- Run existing test suites
-- Grep for `TODO`, `FIXME`, `HACK` introduced by agents
-
-#### 5b: Cross-batch consistency review
-With inline review catching per-batch issues, this phase focuses on **cross-batch consistency**. Launch an **opus audit agent** with the full `git diff` across ALL batches. Check for:
-- **Multi-agent conflicts**: inconsistent edits to shared files across different batches
-- **Incomplete wiring**: components created in one batch but not connected by a later batch
-- **Type drift**: tests/consumers using old shapes after cross-batch type changes
-- **SQL mismatches**: queries assuming nonexistent constraints
-- **Security**: injection, unsafe casts, unhandled rejections
-- **Goal completion**: does the sum of all changes actually achieve the original goal from Phase 2?
-
-#### 5c: Decision
-- Minor issues → fix inline
-- Significant *implementation* issues → new concerns, loop to Phase 3 (DECOMPOSE)
-- **Design-level failure** → loop to Phase 2 (DESIGN), not Phase 3. This is when the audit shows the chosen *approach* is wrong — not a botched concern, but a flaw in DESIGN.md that re-decomposing the same design would only reproduce (e.g., 5b's "goal completion" check fails because the architecture can't actually achieve the goal). Re-run the adversarial design team with the audit findings as new input; the arbiter's restart cap applies (max 1 design loop) before escalating to the user. Looping to DECOMPOSE here just executes the same broken plan twice.
-- Shared-file conflicts → single agent reads ALL changes
-- Corrupted/inconsistent tree → `git reset --hard` to the last green `checkpoint-batch-{N}` (Phase 4), then re-decompose or re-design rather than patching forward
-
-**Gate**: User decides: close, fix, loop to DECOMPOSE, or escalate to DESIGN.
+If Phase 4 was executed, audit is **mandatory** — full body (self-check, cross-batch consistency review, decision) in `references/execute.md`.
 
 ---
 
 ### Phase 6: CLOSE
 
-- Update concern files: STATUS: done, Resolution notes
-- Update 00-overview.md with completion stats
-- If CALIBRATION.md exists, append learnings — **from clean runs, not just failures.** On a run that completed with zero review/audit failures, record the *falsifiable* signals worth repeating: which COMPLEXITY→model assignments held (e.g., "haiku cleared all 6 mechanical concerns with zero review failures → the mechanical threshold is well-calibrated here"), which decomposition shapes avoided shared-file conflicts, which batch orderings parallelized cleanly. Scope positive learnings to concrete, checkable claims — never vibes like "the design was clean." Calibration that only learns from mistakes never reinforces what works, so it keeps re-deriving the same good choices.
-- If this was a new codebase pattern, suggest `/plan calibrate` to bake learnings into the skill
+**This phase is the sink. Without it the WIP counter drifts upward forever** (see the 214-open-0-closed pattern that motivated Phase 0). Never end a /plan run without actually running this phase, even if the user says "we're done" — running it is cheap; not running it adds to the pile.
+
+**Plan-only runs** (Phase 4 skipped): CLOSE finalizes the planning artifact, not the work. Leave every new concern `STATUS: open`, write no `## Resolution`, report the plan path and the scanner's new WIP count (it is *expected* to grow by this plan's concerns), and stop. The closure procedure below applies only to concerns actually implemented and verified in this run.
+
+- **Update every implemented concern's STATUS** — `done` for the ones that shipped (write `done`, not `closed`: `/plan-to-plane` and `/claim-and-implement` parse `done`; the WIP scanner treats the two as synonyms but the siblings don't), `cancelled` for ones abandoned mid-plan, `blocked` for ones waiting on an external dependency. Append a brief `## Resolution` section citing the commit SHA or the evidence of shipping. Every `cancelled` concern also gets an `## Out of scope` ledger line (gist — why — link) so a deliberate scope-out never reads as abandonment.
+- **Update 00-overview.md** with completion stats (N/M closed, remaining blockers, cross-plan dependencies discovered). Empty the fog: every `## Not yet specified` bullet must graduate into a concern or move to `## Out of scope` with a rationale — CLOSE never leaves fog non-empty. Append your own `## Decisions so far` row for each concern this run closed (keyed by the concern link, idempotent) — never edit another closer's row; a contradiction gets a superseding row.
+- **If a concern has a `PLANE:` pointer and was implemented in this run**, close its Plane issue via the plane MCP as well (move it to Done — the same close step `/claim-and-implement` performs). Plane is source of truth for open-status: leave the issue in Todo and the next `/sync-plans` run will rewrite your `done` back to `open`. For Plane-filed concerns this run did NOT implement, don't mutate Plane from here; recommend `/sync-plans` if Plane state might be ahead of the plan docs.
+- **If CALIBRATION.md exists**, append learnings.
+- **If this was a new codebase pattern**, suggest `/plan calibrate` to bake learnings into the skill.
+- **Final check**: re-run the Phase 0 scanner. The plan you just closed should either drop off the "plans with open concerns" list entirely or show a significantly reduced `open_count`. If it doesn't, you skipped a concern — loop back.
+
+The discipline of closing STATUS is load-bearing. A plan with real work done but no STATUS updates looks identical on-disk to an abandoned plan. The scanner can't tell them apart, which is why the 34-plan pile looked unbounded to begin with.
 
 ---
 
@@ -316,24 +309,14 @@ Same mechanism as `/remediate calibrate`:
 | `execute plans/<name>` | Execute a plan that was created with "just plan" |
 | `audit` | Skip to Phase 5 on recent changes |
 | `calibrate` | Bake CALIBRATION.md rules into this skill |
+| `plans/<name>` where `00-overview.md` has `DECOMPOSE: pending` | Resume Phase 2 DESIGN from the decisions index; never execute |
 
 ## Key Behaviors
 
-- **Explore before designing** — understand what exists before deciding what to build
-- **Design before decomposing** — make key decisions before writing concern files
-- **Adversarial design for non-trivial goals** — Designer drafts, Red Team attacks, Arbiter resolves
-- **TOUCHES analysis** — identify shared files before batching to prevent conflicts
-- **Never guess file contents** — always read before editing
-- **Preserve existing patterns** — new code should look like it belongs
+- **Isolate parallel implementers** — worktrees (or /squad) for any multi-agent batch; a shared working tree is how parallel agents clobber each other
 - **Verify blockers at execution time** — don't trust the plan blindly
-- **Propagate context between batches** — agents must know what previous agents did
-- **Inline review before next batch** — opus reviewer catches issues while context is fresh
-- **Checkpoint per batch** — commit each green batch so audit failures roll back cleanly (`git reset --hard`) instead of patching a corrupted tree forward
-- **Audit can escalate to DESIGN** — a design-level failure loops to Phase 2, not Phase 3; never re-execute a broken design
-- **Budget forces scope, not quality** — surface the cost estimate at the DECOMPOSE gate; in autonomous mode, pause and ask rather than downgrading models below their COMPLEXITY tag
-- **Calibrate from successes too** — clean runs teach which assignments and decompositions to repeat, not just which to avoid
-- **Use opus for judgment, not volume** — opus reviews, red teams, arbitrates, and synthesizes; it doesn't do bulk implementation
 - **Agents report anomalies** — don't force, report
+- **Strongest model for judgment, not volume** — fable (opus when unavailable) reviews, red teams, arbitrates, and synthesizes; sonnet does the implementation
 
 ## Differences from /remediate
 
@@ -345,4 +328,4 @@ Same mechanism as `/remediate calibrate`:
 | Concern format | Problem → Evidence → Fix | Goal → Approach → Verify |
 | Typical complexity | More mechanical fixes | More architectural concerns |
 | Design doc | No | Yes (DESIGN.md with red team concerns) |
-| Shared | Inline opus reviewer per batch, context propagation, calibration loop |
+| Shared | Inline fable/opus reviewer per batch, context propagation, calibration loop |
